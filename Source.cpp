@@ -231,18 +231,53 @@ void calculate_and_insert_rest_days(const std::string& filename1, const std::str
     file2.close();
 }
 
-auto exponential_smoothed_value (const std::deque<double>& vec) ->double {
-    const double SMOOTHING_FACTOR = 0.30;
+double mean(const std::deque<double>& scores) {
+    if (scores.empty()) return 0;
+    double result{ 0.0 };
+    int size = scores.size();
+    for (unsigned i{ 0 }; i < size; ++i) {
+        result += scores[i];
+    }
+    result /= double(size);
+    return result;
+}
+
+auto exponential_smoothing(const std::deque<double>& vec, double alpha) -> double {
+
     if (vec.size() == 0) return 0;
     if (vec.size() < 2) return vec[0];
+
     int N = vec.size();
-    double current_smoothed_value{ 0.0 }, previous_smoothed_value{ 0.0 };
-    previous_smoothed_value = vec[0];
-    for (int i = 1; i < N; ++i) {
-        current_smoothed_value = SMOOTHING_FACTOR * vec[i] + (1 - SMOOTHING_FACTOR) * previous_smoothed_value;
-        previous_smoothed_value = current_smoothed_value;
+    int k = std::min(3, N);
+    double level = mean(std::deque<double>(vec.begin(), vec.begin() + k));
+    
+    for (size_t i = 0; i < vec.size(); ++i) {
+        level = alpha * vec[i] + (1 - alpha) * level;
     }
-    return current_smoothed_value;
+    return level;
+}
+
+float predict_next_score(const std::deque<double>& scores, double stddev = 10.0) {
+    // Calculate variance to detect stability
+    float avg = mean(scores);
+    float variance = 0.0;
+    for (int s : scores) {
+        variance += (s - avg) * (s - avg);
+    }
+    variance /= scores.size();
+    float std_dev = std::sqrt(variance);
+
+    float exp_smooth = exponential_smoothing(scores, 0.35);
+
+    // If team is stable (low variance), trust mean more
+    // If team is volatile (high variance), trust exponential more
+    if (std_dev < stddev) {
+        // Stable: 70% mean, 30% exponential
+        return 0.7 * avg + 0.3 * exp_smooth;
+    }
+    else {
+        return 0.6 * exp_smooth + 0.4 * avg;
+    }
 }
 
 void calculate_and_create_lagged_averages(const std::string& filename1, const std::string& filename2, int window_size = 5) {
@@ -352,8 +387,12 @@ void calculate_and_create_lagged_averages(const std::string& filename1, const st
                     std::prev(lagged_features_average[i][first_three_features[2]].end())
                 );
 
-                double avg1 = exponential_smoothed_value(home_window);
-                double avg2 = exponential_smoothed_value(away_window);
+                //double avg1 = predict_next_score(home_window, 7.0); //B-League
+                //double avg2 = predict_next_score(away_window, 7.0);
+
+                double avg1 = predict_next_score(home_window); //NBA
+                double avg2 = predict_next_score(away_window);
+
                 stream << avg1 << "," << avg2 << ",";
             }
             
@@ -369,8 +408,12 @@ void calculate_and_create_lagged_averages(const std::string& filename1, const st
                     std::prev(lagged_features_average[i][first_three_features[2]].end())
                 );
 
-                double avg1 = exponential_smoothed_value(home_window);
-                double avg2 = exponential_smoothed_value(away_window);
+                //double avg1 = predict_next_score(home_window, 7.0); //B-League
+                //double avg2 = predict_next_score(away_window, 7.0);
+
+                double avg1 = predict_next_score(home_window); //NBA
+                double avg2 = predict_next_score(away_window);
+
                 stream << avg1 << "," << avg2;
                 if (i < 26) stream << ",";
             }
@@ -412,6 +455,8 @@ int main(int argc, char* argv[]) {
 	calculate_and_insert_rest_days(modified_filename_1, modified_filename_2);
 
    std::vector<std::string> files{
+        R"(C:\Users\HP\source\repos\Rehoboam\Rehoboam\Data\Basketball\nba\2019-2020_reversed_plus_rest_days.csv)",
+        R"(C:\Users\HP\source\repos\Rehoboam\Rehoboam\Data\Basketball\nba\2020-2021_reversed_plus_rest_days.csv)",
         R"(C:\Users\HP\source\repos\Rehoboam\Rehoboam\Data\Basketball\nba\2021-2022_reversed_plus_rest_days.csv)",
         R"(C:\Users\HP\source\repos\Rehoboam\Rehoboam\Data\Basketball\nba\2022-2023_reversed_plus_rest_days.csv)",
         R"(C:\Users\HP\source\repos\Rehoboam\Rehoboam\Data\Basketball\nba\2023-2024_reversed_plus_rest_days.csv)",
@@ -419,13 +464,24 @@ int main(int argc, char* argv[]) {
         R"(C:\Users\HP\source\repos\Rehoboam\Rehoboam\Data\Basketball\nba\2025-2026_reversed_plus_rest_days.csv)"
     };
 
+   /*std::vector<std::string> files{
+        R"(C:\Users\HP\source\repos\Rehoboam\Rehoboam\Data\Basketball\b-league\2023-2024_reversed_plus_rest_days.csv)",
+        R"(C:\Users\HP\source\repos\Rehoboam\Rehoboam\Data\Basketball\b-league\2024-2025_reversed_plus_rest_days.csv)",
+        R"(C:\Users\HP\source\repos\Rehoboam\Rehoboam\Data\Basketball\b-league\2025-2026_reversed_plus_rest_days.csv)"
+    };*/
+
     std::string combinedFile{ fs::path(files[0]).parent_path().string() + R"(\combined.csv)" };
     for (const auto& filename : files) {
         copy_file(filename, combinedFile);
     }
 
     std::string modified_filename_3 = get_modified_filePath(combinedFile, "_lagged_averages");
-    calculate_and_create_lagged_averages(combinedFile, modified_filename_3);
+    //calculate_and_create_lagged_averages(combinedFile, modified_filename_3, 5);
+    //calculate_and_create_lagged_averages(combinedFile, modified_filename_3, 8);
+    calculate_and_create_lagged_averages(combinedFile, modified_filename_3, 10); // 19.06, 19.02, 19.03
+    //calculate_and_create_lagged_averages(combinedFile, modified_filename_3, 12); //19.11, 19.02, 19.01
+    //calculate_and_create_lagged_averages(combinedFile, modified_filename_3, 13);  //19.09, 19.05, 19.04
+    //calculate_and_create_lagged_averages(combinedFile, modified_filename_3, 15); //19.11. 19.08, 19.08
 
     dataframe basketball_data = load_data(modified_filename_3);
 
@@ -470,8 +526,6 @@ int main(int argc, char* argv[]) {
     basketball_data["A_2FG%_VS_H_ALLOWED"] = basketball_data["A_2FG%"] - basketball_data["H_2FG%_ALLOWED"];
     basketball_data["H_3FG%_VS_A_ALLOWED"] = basketball_data["H_3FG%"] - basketball_data["A_3FG%_ALLOWED"];
     basketball_data["A_3FG%_VS_H_ALLOWED"] = basketball_data["A_3FG%"] - basketball_data["H_3FG%_ALLOWED"];
-    basketball_data["H_TS%_VS_A_DEF"] = basketball_data["H_TS%"] - basketball_data["A_TS%"];
-    basketball_data["A_TS%_VS_H_DEF"] = basketball_data["A_TS%"] - basketball_data["H_TS%"];
 
     // Expected score based on matchup
     basketball_data["H_EXPECTED_SCORE"] = (basketball_data["H_OFF_RATING"] + basketball_data["A_DEF_RATING"]) * 0.5;
@@ -502,7 +556,7 @@ int main(int argc, char* argv[]) {
         "H_PPP", "A_PPP",
         "H_TS%", "A_TS%", "AVG_TS%", 
         "H_OFF_VS_A_DEF", "A_OFF_VS_H_DEF", "H_FG%_VS_A_ALLOWED", "A_FG%_VS_H_ALLOWED", "H_2FG%_VS_A_ALLOWED", "A_2FG%_VS_H_ALLOWED", 
-        "H_3FG%_VS_A_ALLOWED", "A_3FG%_VS_H_ALLOWED", "H_TS%_VS_A_DEF", "A_TS%_VS_H_DEF",
+        "H_3FG%_VS_A_ALLOWED", "A_3FG%_VS_H_ALLOWED",
         "H_EXPECTED_SCORE", "A_EXPECTED_SCORE", "EXPECTED_TOTAL",
         "H_NET_RATING", "A_NET_RATING", "NET_RATING_DIFF",
         "REST_DIFF", "PACE_X_NET_RATING", "PACE_X_EFFICIENCY",
