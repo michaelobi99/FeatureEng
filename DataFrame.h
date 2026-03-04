@@ -157,6 +157,88 @@ public:
 		return result;
 	}
 
+	string_vector operator<(const double& scalar) const {
+		std::ostringstream stream;
+		std::vector<double> vec1 = as_float(vec_str);
+		string_vector result(vec1.size());
+		for (size_t i = 0; i < vec1.size(); ++i) {
+			result[i] = (vec1[i] < scalar) ? "1" : "0";
+		}
+		return result;
+	}
+
+	string_vector operator>(const double& scalar) const {
+		std::ostringstream stream;
+		std::vector<double> vec1 = as_float(vec_str);
+		string_vector result(vec1.size());
+		for (size_t i = 0; i < vec1.size(); ++i) {
+			result[i] = (vec1[i] > scalar) ? "1" : "0";
+		}
+		return result;
+	}
+
+	string_vector operator<=(const double& scalar) const {
+		std::vector<double> vec1 = as_float(vec_str);
+		string_vector result(vec1.size());
+		for (size_t i = 0; i < vec1.size(); ++i) {
+			result[i] = (vec1[i] <= scalar) ? "1" : "0";
+		}
+		return result;
+	}
+
+	string_vector operator>=(const double& scalar) const {
+		std::vector<double> vec1 = as_float(vec_str);
+		string_vector result(vec1.size());
+		for (size_t i = 0; i < vec1.size(); ++i) {
+			result[i] = (vec1[i] >= scalar) ? "1" : "0";
+		}
+		return result;
+	}
+
+	string_vector operator==(const double& scalar) const {
+		std::vector<double> vec1 = as_float(vec_str);
+		string_vector result(vec1.size());
+		for (size_t i = 0; i < vec1.size(); ++i) {
+			result[i] = (std::abs(vec1[i] - scalar) < 1e-9) ? "1" : "0";
+		}
+		return result;
+	}
+
+	string_vector operator!=(const double& scalar) const {
+		std::vector<double> vec1 = as_float(vec_str);
+		string_vector result(vec1.size());
+		for (size_t i = 0; i < vec1.size(); ++i) {
+			result[i] = (std::abs(vec1[i] - scalar) >= 1e-9) ? "1" : "0";
+		}
+		return result;
+	}
+
+	string_vector operator&&(const string_vector& other) const {
+		if (other.size() != vec_str.size()) {
+			std::cout << "ERROR: Size mismatch during vector operation!\n";
+			exit(1);
+		}
+		string_vector result(vec_str.size());
+
+		for (size_t i = 0; i < result.size(); ++i) {
+			result[i] = (vec_str[i] == "1" && other[i] == "1") ? "1" : "0";
+		}
+		return result;
+	}
+
+	string_vector operator||(const string_vector& other) const {
+		if (other.size() != vec_str.size()) {
+			std::cout << "ERROR: Size mismatch during vector operation!\n";
+			exit(1);
+		}
+		string_vector result(vec_str.size());
+
+		for (size_t i = 0; i < result.size(); ++i) {
+			result[i] = (vec_str[i] == "1" || other[i] == "1") ? "1" : "0";
+		}
+		return result;
+	}
+
 private:
 	std::vector<std::string> vec_str;
 

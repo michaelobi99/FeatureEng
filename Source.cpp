@@ -1,8 +1,9 @@
-#include <filesystem>
+﻿#include <filesystem>
 #include <fstream>
 #include <sstream>
 #include <unordered_map>
 #include <regex>
+#include <numeric>
 #include <deque>
 #include "DataFrame.h"
 
@@ -233,51 +234,140 @@ void calculate_and_insert_rest_days(const std::string& filename1, const std::str
 
 double mean(const std::deque<double>& scores) {
     if (scores.empty()) return 0;
-    double result{ 0.0 };
     int size = scores.size();
-    for (unsigned i{ 0 }; i < size; ++i) {
-        result += scores[i];
+    double result = std::accumulate(std::begin(scores), std::end(scores), 0.0) / double(size);
+    return result;
+}
+
+double standard_deviation(const std::deque<double>& scores, double mean) {
+    if (scores.size() < 2) {
+        return 0;
     }
-    result /= double(size);
+    float sum_squared_diff{ 0.0 };
+    int size = scores.size();
+    for (const auto& elem : scores) {
+        sum_squared_diff += (elem - mean) * (elem - mean);
+    }
+    sum_squared_diff /= float(size - 1);
+    float stddev = std::sqrt(sum_squared_diff);
+    return stddev;
+}
+
+double skew(const std::deque<double>& scores) {
+    double avg = mean(scores);
+    size_t N = scores.size();
+    double result = 0.0;
+    for (size_t i{ 0 }; i < N; ++i) {
+        result += (scores[i] - avg) * (scores[i] - avg) * (scores[i] - avg);
+    }
+    result /= (double)N;
+    double var = std::pow(standard_deviation(scores, avg), 2);
+    var = std::pow(var, 1.5);
+    if (var < 1e-9) return 0.0;
+    result /= var;
+    return result;
+}
+
+double kurtosis(const std::deque<double>& scores) {
+    double avg = mean(scores);
+    size_t N = scores.size();
+
+    if (N < 4) return 0.0;
+
+    double result = 0.0;
+
+    for (size_t i = 0; i < N; ++i) {
+        double diff = scores[i] - avg;
+        result += diff * diff * diff * diff;
+    }
+    result /= (double)N;
+
+    double var = std::pow(standard_deviation(scores, avg), 2);
+    if (var < 1e-9) return 0.0;
+
+    result /= (var * var); // divide by σ^4
+    result -= 3.0;         // excess kurtosis (normal → 0)
+
     return result;
 }
 
 auto exponential_smoothing(const std::deque<double>& vec, double alpha) -> double {
-
     if (vec.size() == 0) return 0;
     if (vec.size() < 2) return vec[0];
 
     int N = vec.size();
-    int k = std::min(3, N);
-    double level = mean(std::deque<double>(vec.begin(), vec.begin() + k));
+    int k = std::min(5, N);
+    double smoothed = mean(std::deque<double>(vec.begin(), vec.begin() + k));
     
-    for (size_t i = 0; i < vec.size(); ++i) {
-        level = alpha * vec[i] + (1 - alpha) * level;
+    for (size_t i = 1; i < vec.size(); ++i) {
+        smoothed = alpha * vec[i] + (1 - alpha) * smoothed;
     }
-    return level;
+    return smoothed;
 }
 
-float predict_next_score(const std::deque<double>& scores, double stddev = 10.0) {
-    // Calculate variance to detect stability
-    float avg = mean(scores);
-    float variance = 0.0;
-    for (int s : scores) {
-        variance += (s - avg) * (s - avg);
-    }
-    variance /= scores.size();
-    float std_dev = std::sqrt(variance);
+float predict_next_score(const std::deque<double>& scores) {
+    return 0.4 * mean(scores) + 0.6 * exponential_smoothing(scores, 0.35);
+}
 
-    float exp_smooth = exponential_smoothing(scores, 0.35);
+std::unordered_map<char, int> range_bin(const std::deque<double>& series) {
+    std::unordered_map<char, int> result;
+    result['s'] = 0;
+    result['g'] = 0;
+    result['l'] = 0;
+    const double avg = mean(series);
+    const double stddev = standard_deviation(series, avg);
 
-    // If team is stable (low variance), trust mean more
-    // If team is volatile (high variance), trust exponential more
-    if (std_dev < stddev) {
-        // Stable: 70% mean, 30% exponential
-        return 0.7 * avg + 0.3 * exp_smooth;
+    for (auto elem : series) {
+        if (elem  < (avg - stddev))
+            result['l']++;
+        else if (elem > (avg + stddev))
+            result['g']++;
+        else 
+            result['s']++;
     }
-    else {
-        return 0.6 * exp_smooth + 0.4 * avg;
+    return result;
+}
+
+std::vector<double> probabilities(const std::unordered_map<char, int>& dict) {
+    int total = 0;
+    std::vector<double> probs;
+    for (const auto& [k, v] : dict) {
+        probs.push_back(v);
+        total += v;
     }
+    std::for_each(std::begin(probs), std::end(probs), [total](double& prob) {
+        prob /= (double)total;
+    });
+    return probs;
+}
+
+double entropy(const std::vector<double>& probabilities) {
+    double result = 0.0;
+    for (auto pi : probabilities) {
+        if (pi > 0)
+            result += pi * std::log2(pi);
+    }
+    result *= -1;
+    return result;
+}
+
+double conditional_entropy(const std::deque<double>& series) {
+    std::unordered_map<int, int> joint;
+    std::unordered_map<int, int> prev;
+    int N = series.size();
+    for (int i = 1; i < N; ++i) {
+        int key = series[i - 1] * 1000 + series[i];
+        joint[key]++;
+        prev[series[i - 1]]++;
+    }
+    double H = 0.0;
+    for (auto& kv : joint) {
+        int prev_state = kv.first / 1000;
+        double p_xy = (double)kv.second / (N - 1);
+        double p_x = (double)prev[prev_state] / (N - 1);
+        H -= p_xy * std::log2(p_xy / p_x);
+    }
+    return H;
 }
 
 void calculate_and_create_lagged_averages(const std::string& filename1, const std::string& filename2, int window_size = 5) {
@@ -287,8 +377,12 @@ void calculate_and_create_lagged_averages(const std::string& filename1, const st
         std::cerr << "Error opening files!" << std::endl;
         return;
     }
+    struct TeamTotals {
+        std::deque<double> home_values;
+        std::deque<double> away_values;
+    };
 
-    std::vector<std::unordered_map<std::string, std::deque<double>>> lagged_features_average(27);
+    std::vector<std::unordered_map<std::string, TeamTotals>> lagged_features_average(27);
 
     std::vector<std::string> first_three_features(3);
     std::vector<std::string> last_three_features(3);
@@ -297,7 +391,9 @@ void calculate_and_create_lagged_averages(const std::string& filename1, const st
     std::string header, line;
     std::getline(file, header); //read header
 
+    //file2 << header << R"(,H_FG%_ALLOWED,A_FG%_ALLOWED,H_2FG%_ALLOWED,A_2FG%_ALLOWED,H_3FG%_ALLOWED,A_3FG%_ALLOWED,H_TOV_ALLOWED,A_TOV_ALLOWED,H_ENTROPY,A_ENTROPY,H_COND_ENTROPY,A_COND_ENTROPY,H_SKEW,A_SKEW,H_KURTOSIS,A_KURTOSIS)";
     file2 << header << R"(,H_FG%_ALLOWED,A_FG%_ALLOWED,H_2FG%_ALLOWED,A_2FG%_ALLOWED,H_3FG%_ALLOWED,A_3FG%_ALLOWED,H_TOV_ALLOWED,A_TOV_ALLOWED)";
+
     file2 << "\n";
     while (std::getline(file, line)) {
         size_t pos;
@@ -313,10 +409,13 @@ void calculate_and_create_lagged_averages(const std::string& filename1, const st
         double home_3fg_pct{ 0.0 }, away_3fg_pct{ 0.0 };
         double home_tov{ 0.0 }, away_tov{ 0.0 };
 
+        std::string h_team = first_three_features[1];
+        std::string a_team = first_three_features[2];
+
         for (i = 0; i < 23; ++i) {
             pos = line.find_first_of(',');
             feature = line.substr(0, pos);
-            lagged_features_average[i][first_three_features[1]].push_back(std::stod(feature));
+            lagged_features_average[i][h_team].home_values.push_back(std::stod(feature));
             line.erase(0, pos + 1);
             if (i == 3)
                 home_fg_pct = std::stod(feature);
@@ -330,7 +429,7 @@ void calculate_and_create_lagged_averages(const std::string& filename1, const st
 
             pos = line.find_first_of(',');
             feature = line.substr(0, pos);
-            lagged_features_average[i][first_three_features[2]].push_back(std::stod(feature));
+            lagged_features_average[i][a_team].away_values.push_back(std::stod(feature));
             line.erase(0, pos + 1);
             if (i == 3)
                 away_fg_pct = std::stod(feature);
@@ -342,19 +441,19 @@ void calculate_and_create_lagged_averages(const std::string& filename1, const st
                 away_tov = std::stod(feature);
         }
 
-        lagged_features_average[i][first_three_features[1]].push_back(away_fg_pct);
-        lagged_features_average[i++][first_three_features[2]].push_back(home_fg_pct);
+        lagged_features_average[i][h_team].home_values.push_back(away_fg_pct);
+        lagged_features_average[i][a_team].away_values.push_back(home_fg_pct);
+        ++i;
+        lagged_features_average[i][h_team].home_values.push_back(away_2fg_pct);
+        lagged_features_average[i][a_team].away_values.push_back(home_2fg_pct);
+        ++i;
+        lagged_features_average[i][h_team].home_values.push_back(away_3fg_pct);
+        lagged_features_average[i][a_team].away_values.push_back(home_3fg_pct);
+        ++i;
+        lagged_features_average[i][h_team].home_values.push_back(away_tov);
+        lagged_features_average[i][a_team].away_values.push_back(home_tov);
 
-        lagged_features_average[i][first_three_features[1]].push_back(away_2fg_pct);
-        lagged_features_average[i++][first_three_features[2]].push_back(home_2fg_pct);
-
-        lagged_features_average[i][first_three_features[1]].push_back(away_3fg_pct);
-        lagged_features_average[i++][first_three_features[2]].push_back(home_3fg_pct);
-
-        lagged_features_average[i][first_three_features[1]].push_back(away_tov);
-        lagged_features_average[i][first_three_features[2]].push_back(home_tov);
-
-
+        
         for (i = 0; i < 2; ++i) {
             pos = line.find_first_of(',');
             last_three_features[i] = line.substr(0, pos);
@@ -363,67 +462,150 @@ void calculate_and_create_lagged_averages(const std::string& filename1, const st
         last_three_features[2] = line;
 
 
-        if (lagged_features_average[0][first_three_features[1]].size() > (window_size + 1)) {
-            for (i = 0; i < lagged_features_average.size(); ++i)
-                lagged_features_average[i][first_three_features[1]].pop_front();
+        if (lagged_features_average[0][h_team].home_values.size() > (window_size + 1)) {
+            for (i = 0; i < lagged_features_average.size(); ++i) {
+                lagged_features_average[i][h_team].home_values.pop_front();
+            }
         }
-        if (lagged_features_average[0][first_three_features[2]].size() > (window_size + 1)) {
-            for (i = 0; i < lagged_features_average.size(); ++i)
-                lagged_features_average[i][first_three_features[2]].pop_front();
+        if (lagged_features_average[0][a_team].away_values.size() > (window_size + 1)) {
+            for (i = 0; i < lagged_features_average.size(); ++i) {
+                lagged_features_average[i][a_team].away_values.pop_front();
+            }
         }
 
-
-        if (lagged_features_average[0][first_three_features[1]].size() == (window_size + 1) && lagged_features_average[0][first_three_features[2]].size() == (window_size+1)) {
+        if (lagged_features_average[0][h_team].home_values.size() == (window_size+1) && lagged_features_average[0][a_team].away_values.size() == (window_size+1)) {
             for (const auto& elem : first_three_features) {
                 stream << elem << ",";
             }
             for (i = 0; i < 23; ++i) {
-                std::deque<double> home_window(
-                    lagged_features_average[i][first_three_features[1]].begin(),
-                    std::prev(lagged_features_average[i][first_three_features[1]].end())
+                std::deque<double> home_home_values(
+                    lagged_features_average[i][h_team].home_values.begin(),
+                    std::prev(lagged_features_average[i][h_team].home_values.end())
                 );
-                std::deque<double> away_window(
-                    lagged_features_average[i][first_three_features[2]].begin(),
-                    std::prev(lagged_features_average[i][first_three_features[2]].end())
+                std::deque<double> home_away_values(
+                    lagged_features_average[i][h_team].away_values.begin(),
+                    std::prev(lagged_features_average[i][h_team].away_values.end())
+                );
+                std::deque<double> away_home_values(
+                    lagged_features_average[i][a_team].home_values.begin(),
+                    std::prev(lagged_features_average[i][a_team].home_values.end())
+                );
+                std::deque<double> away_away_values (
+                    lagged_features_average[i][a_team].away_values.begin(),
+                    std::prev(lagged_features_average[i][a_team].away_values.end())
                 );
 
-                //double avg1 = predict_next_score(home_window, 7.0); //B-League
-                //double avg2 = predict_next_score(away_window, 7.0);
-
-                double avg1 = predict_next_score(home_window); //NBA
-                double avg2 = predict_next_score(away_window);
+                double avg1 = predict_next_score(home_home_values) * 0.6 + 
+                    predict_next_score(home_away_values) * 0.4; //NBA
+                double avg2 = predict_next_score(away_away_values) * 0.6 +
+                    predict_next_score(away_home_values) * 0.4;
 
                 stream << avg1 << "," << avg2 << ",";
             }
             
             stream << last_three_features[0] << "," << last_three_features[1] << "," << last_three_features[2] << ",";
 
+         
             for (; i < 27; ++i) {
-                std::deque<double> home_window(
-                    lagged_features_average[i][first_three_features[1]].begin(),
-                    std::prev(lagged_features_average[i][first_three_features[1]].end())
+                std::deque<double> home_home_values(
+                    lagged_features_average[i][h_team].home_values.begin(),
+                    std::prev(lagged_features_average[i][h_team].home_values.end())
                 );
-                std::deque<double> away_window(
-                    lagged_features_average[i][first_three_features[2]].begin(),
-                    std::prev(lagged_features_average[i][first_three_features[2]].end())
+                std::deque<double> home_away_values(
+                    lagged_features_average[i][h_team].away_values.begin(),
+                    std::prev(lagged_features_average[i][h_team].away_values.end())
+                );
+                std::cout << "Home home values = " << home_home_values.size() << "\n";
+                std::cout << "Home away values = " << home_away_values.size() << "\n";
+
+                std::deque<double> away_home_values(
+                    lagged_features_average[i][a_team].home_values.begin(),
+                    std::prev(lagged_features_average[i][a_team].home_values.end())
+                );
+                std::deque<double> away_away_values(
+                    lagged_features_average[i][a_team].away_values.begin(),
+                    std::prev(lagged_features_average[i][a_team].away_values.end())
                 );
 
-                //double avg1 = predict_next_score(home_window, 7.0); //B-League
-                //double avg2 = predict_next_score(away_window, 7.0);
+                std::cout << "Away home values = " << away_home_values.size() << "\n";
+                std::cout << "Away away values = " << away_away_values.size() << "\n";
 
-                double avg1 = predict_next_score(home_window); //NBA
-                double avg2 = predict_next_score(away_window);
+                double avg1 = predict_next_score(home_home_values) * 0.6 +
+                    predict_next_score(home_away_values) * 0.4; //NBA
+                double avg2 = predict_next_score(away_away_values) * 0.6 +
+                    predict_next_score(away_home_values) * 0.4;
+
+                //stream << avg1 << "," << avg2<<",";
 
                 stream << avg1 << "," << avg2;
                 if (i < 26) stream << ",";
             }
+
+            /*double home_entropy = entropy(probabilities(range_bin(
+                std::deque<double>(
+                    lagged_features_average[0][h_team].home_values.begin(),
+                    std::prev(lagged_features_average[0][h_team].home_values.end())
+            ))));
+            double away_entropy = entropy(probabilities(range_bin(
+                std::deque<double>(
+                    lagged_features_average[0][a_team].away_values.begin(),
+                    std::prev(lagged_features_average[0][a_team].away_values.end())
+            ))));
+            double home_cond_entropy = conditional_entropy(
+                std::deque<double>(
+                    lagged_features_average[0][h_team].home_values.begin(),
+                    std::prev(lagged_features_average[0][h_team].home_values.end())
+            ));
+            double away_cond_entropy = conditional_entropy(
+                std::deque<double>(
+                    lagged_features_average[0][a_team].away_values.begin(),
+                    std::prev(lagged_features_average[0][a_team].away_values.end())
+            ));
+            double home_skew = skew(
+                std::deque<double>(
+                    lagged_features_average[0][h_team].home_values.begin(),
+                    std::prev(lagged_features_average[0][h_team].home_values.end())
+            ));
+            double away_skew = skew(
+                std::deque<double>(
+                    lagged_features_average[0][a_team].away_values.begin(),
+                    std::prev(lagged_features_average[0][a_team].away_values.end())
+            ));
+            double home_kurt = kurtosis(
+                std::deque<double>(
+                    lagged_features_average[0][h_team].home_values.begin(),
+                    std::prev(lagged_features_average[0][h_team].home_values.end())
+            ));
+            double away_kurt = kurtosis(
+                std::deque<double>(
+                    lagged_features_average[0][a_team].away_values.begin(),
+                    std::prev(lagged_features_average[0][a_team].away_values.end())
+            ));
+
+            stream << home_entropy << "," << away_entropy <<",";
+            stream << home_cond_entropy << "," << away_cond_entropy <<",";
+            stream << home_skew << "," << away_skew <<",";
+            stream << home_kurt << "," << away_kurt;*/
 
             line = stream.str() + "\n";
             file2 << line;
             stream.str("");
             line.clear();
         }
-        
+    }
+
+    std::string team = "Dallas Mavericks";
+    std::cout << "got here\n";
+    std::deque<double> home_values = lagged_features_average[0][team].home_values;
+    std::deque<double> away_values = lagged_features_average[0][team].away_values;
+    std::cout << "size 1 = " << home_values.size() << "\n";
+    std::cout << "size 2 = " << away_values.size() << "\n";
+    for (double i : home_values) {
+        std::cout << i << " ";
+    }
+    std::cout << "\n\n";
+    for (int i : away_values) {
+        std::cout << i << " ";
     }
     file.close();
     file2.close();
@@ -478,10 +660,12 @@ int main(int argc, char* argv[]) {
     std::string modified_filename_3 = get_modified_filePath(combinedFile, "_lagged_averages");
     //calculate_and_create_lagged_averages(combinedFile, modified_filename_3, 5);
     //calculate_and_create_lagged_averages(combinedFile, modified_filename_3, 8);
-    calculate_and_create_lagged_averages(combinedFile, modified_filename_3, 10); // 19.06, 19.02, 19.03
-    //calculate_and_create_lagged_averages(combinedFile, modified_filename_3, 12); //19.11, 19.02, 19.01
-    //calculate_and_create_lagged_averages(combinedFile, modified_filename_3, 13);  //19.09, 19.05, 19.04
-    //calculate_and_create_lagged_averages(combinedFile, modified_filename_3, 15); //19.11. 19.08, 19.08
+    //calculate_and_create_lagged_averages(combinedFile, modified_filename_3, 7); 
+    //calculate_and_create_lagged_averages(combinedFile, modified_filename_3, 9); 
+    calculate_and_create_lagged_averages(combinedFile, modified_filename_3, 10); 
+    //calculate_and_create_lagged_averages(combinedFile, modified_filename_3, 12);
+    //calculate_and_create_lagged_averages(combinedFile, modified_filename_3, 13);
+    //calculate_and_create_lagged_averages(combinedFile, modified_filename_3, 15);
 
     dataframe basketball_data = load_data(modified_filename_3);
 
@@ -528,9 +712,16 @@ int main(int argc, char* argv[]) {
     basketball_data["A_3FG%_VS_H_ALLOWED"] = basketball_data["A_3FG%"] - basketball_data["H_3FG%_ALLOWED"];
 
     // Expected score based on matchup
-    basketball_data["H_EXPECTED_SCORE"] = (basketball_data["H_OFF_RATING"] + basketball_data["A_DEF_RATING"]) * 0.5;
-    basketball_data["A_EXPECTED_SCORE"] = (basketball_data["A_OFF_RATING"] + basketball_data["H_DEF_RATING"]) * 0.5;
-    basketball_data["EXPECTED_TOTAL"] = basketball_data["H_EXPECTED_SCORE"] + basketball_data["A_EXPECTED_SCORE"];
+    basketball_data["H_EXPECTED_SCORE"] =
+        ((basketball_data["H_OFF_RATING"] + basketball_data["A_DEF_RATING"]) * 0.5) *
+        (basketball_data["H_POSS"] / 100.0);
+    basketball_data["A_EXPECTED_SCORE"] =
+        ((basketball_data["A_OFF_RATING"] + basketball_data["H_DEF_RATING"]) * 0.5) *
+        (basketball_data["A_POSS"] / 100.0);
+
+    // Make EXPECTED_TOTAL consistent - just sum the individual scores
+    basketball_data["EXPECTED_TOTAL"] =
+        basketball_data["H_EXPECTED_SCORE"] + basketball_data["A_EXPECTED_SCORE"];
 
     // Net ratings
     basketball_data["H_NET_RATING"] = basketball_data["H_OFF_RATING"] - basketball_data["H_DEF_RATING"];
@@ -540,7 +731,23 @@ int main(int argc, char* argv[]) {
     // More advanced metrics
     basketball_data["REST_DIFF"] = basketball_data["H_REST_DAYS"] - basketball_data["A_REST_DAYS"];
     basketball_data["PACE_X_NET_RATING"] = basketball_data["GAME_PACE"] * basketball_data["NET_RATING_DIFF"];
-    basketball_data["PACE_X_EFFICIENCY"] = basketball_data["GAME_PACE"] * basketball_data["AVG_TS%"];
+    //basketball_data["PACE_X_EFFICIENCY"] = basketball_data["GAME_PACE"] * basketball_data["AVG_TS%"];
+    basketball_data["PACE_X_EFFICIENCY"] =
+        (basketball_data["GAME_PACE"] / 100.0) * basketball_data["AVG_TS%"] * 200.0;
+
+    //Numeric binary flags
+    basketball_data["FAST_PACE"] = (basketball_data["GAME_PACE"] > 102.0);
+    basketball_data["BOTH_EFFICIENT"] =
+        ((basketball_data["H_EFG%"] > 0.54) && (basketball_data["A_EFG%"] > 0.54));
+    basketball_data["STRONG_DEFENSE"] =
+        ((basketball_data["H_DEF_RATING"] < 108) && (basketball_data["A_DEF_RATING"] < 108));
+
+    basketball_data["HIGH_SCORING_SETUP"] =
+        ((basketball_data["GAME_PACE"] > 100.0) && (basketball_data["AVG_TS%"] > 0.55));
+
+    basketball_data["LOW_SCORING_SETUP"] =
+        ((basketball_data["GAME_PACE"] < 96.0) ||
+            ((basketball_data["H_DEF_RATING"] < 108) && (basketball_data["A_DEF_RATING"] < 108)));
 
 
     std::vector<std::string> features = {
@@ -549,6 +756,9 @@ int main(int argc, char* argv[]) {
         "A_3FG%", "H_FTA", "A_FTA", "H_FT", "A_FT", "H_FT%", "A_FT%", "H_OREB", "A_OREB", "H_DREB", "A_DREB", "H_TREB", "A_TREB", "H_AST", "A_AST", "H_BLKS", "A_BLKS",
         "H_TOV", "A_TOV", "H_STL", "A_STL", "H_P_FOULS", "A_P_FOULS", "H_OFF_RATING", "A_OFF_RATING", "H_DEF_RATING", "A_DEF_RATING", "H_REST_DAYS", "A_REST_DAYS",
         "H_FG%_ALLOWED", "A_FG%_ALLOWED", "H_2FG%_ALLOWED", "A_2FG%_ALLOWED", "H_3FG%_ALLOWED", "A_3FG%_ALLOWED", "H_TOV_ALLOWED", "A_TOV_ALLOWED",
+        /*"H_ENTROPY", "A_ENTROPY",
+        "H_COND_ENTROPY", "A_COND_ENTROPY",
+        "H_SKEW", "A_SKEW", "H_KURTOSIS", "A_KURTOSIS",*/
         "H_2FG_RATE", "A_2FG_RATE", "H_3FG_RATE", "A_3FG_RATE", "H_FT_RATE", "A_FT_RATE",
         "H_TOV_RATE", "A_TOV_RATE", "H_OREB_RATE", "A_OREB_RATE", "H_DREB_RATE", "A_DREB_RATE",
         "H_EFG%", "A_EFG%",
@@ -560,6 +770,8 @@ int main(int argc, char* argv[]) {
         "H_EXPECTED_SCORE", "A_EXPECTED_SCORE", "EXPECTED_TOTAL",
         "H_NET_RATING", "A_NET_RATING", "NET_RATING_DIFF",
         "REST_DIFF", "PACE_X_NET_RATING", "PACE_X_EFFICIENCY",
+        "FAST_PACE", "BOTH_EFFICIENT", "STRONG_DEFENSE",
+        "HIGH_SCORING_SETUP", "LOW_SCORING_SETUP",
         "TOTAL",
     };
 
