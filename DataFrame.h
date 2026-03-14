@@ -19,8 +19,8 @@ public:
 		return vec_str.size();
 	}
 
-	std::string& operator[](size_t index) {
-		return vec_str[index];
+	std::string& operator[](size_t idx) {
+		return vec_str[idx];
 	}
 
 	const std::string& operator[](size_t index) const {
@@ -239,6 +239,7 @@ public:
 		return result;
 	}
 
+
 private:
 	std::vector<std::string> vec_str;
 
@@ -265,6 +266,50 @@ private:
 	}
 };
 
+
+class string_vector_iterator {
+private:
+	string_vector& vec;
+	size_t index;
+public:
+	string_vector_iterator(string_vector& vec, size_t index) : vec(vec), index{ index } 
+	{}
+	bool operator!= (const string_vector_iterator& other) const {
+		return index != other.index;
+	}
+	std::string const& operator* () const {
+		return vec[index];
+	}
+	string_vector_iterator& operator++() {
+		++index;
+		return *this;
+	}
+	string_vector_iterator operator++(int) {
+		auto temp = *this;
+		++*this;
+		return temp;
+	}
+};
+
+string_vector_iterator begin(string_vector& vec) {
+	return string_vector_iterator(vec, 0);
+}
+
+string_vector_iterator end(string_vector& vec) {
+	return string_vector_iterator(vec, vec.size());
+}
+
+string_vector apply_function(const string_vector& vec, double(*func)(double)) {
+	string_vector result(vec.size());
+	std::vector<double> num_vec = vec.to_float();
+	std::ostringstream stream("");
+	for (int i = 0; i < num_vec.size(); ++i) {
+		stream << func(num_vec[i]);
+		result[i] = stream.str();
+		stream.str("");
+	}
+	return result;
+}
 
 using dataframe = std::unordered_map<std::string, string_vector>;
 
